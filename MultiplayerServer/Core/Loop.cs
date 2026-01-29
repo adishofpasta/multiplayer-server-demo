@@ -8,6 +8,8 @@ namespace MultiplayerServer.Core
         private bool _running;
         private Thread? _thread;
 
+        public event Action? OnTick;
+
         public void Start()
         {
             _running = true;
@@ -20,7 +22,8 @@ namespace MultiplayerServer.Core
             _running = false;
         }
 
-        private void Run()         {
+        private void Run()
+        {
             const int tick = 30;
             const float delta = 1f / tick;
 
@@ -33,7 +36,12 @@ namespace MultiplayerServer.Core
 
         private void Tick(float deltaTime)
         {
-            // TODO: aggiornare lo stato del mondo
+            foreach (var player in _world.Players.Values)
+            {
+                player.Update(deltaTime);
+            }
+
+            OnTick?.Invoke();
         }
     }
 }

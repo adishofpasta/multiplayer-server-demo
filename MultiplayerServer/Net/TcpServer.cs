@@ -44,6 +44,9 @@ namespace MultiplayerServer.Net
             {
                 while (_running && !cancellationToken.IsCancellationRequested)
                 {
+                    if (_listener == null)
+                        throw new InvalidOperationException("Server running on unitialized listener.");
+
                     var tcpClient = await _listener.AcceptTcpClientAsync(cancellationToken);
                     var clientConnection = new ClientConnection(tcpClient, _nextPlayerId++);
 
