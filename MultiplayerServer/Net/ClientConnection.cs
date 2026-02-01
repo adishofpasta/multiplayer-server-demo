@@ -1,4 +1,6 @@
-﻿using System.Net.Sockets;
+﻿using System;
+using System.IO;
+using System.Net.Sockets;
 using System.Text;
 
 namespace MultiplayerServer.Net
@@ -9,47 +11,61 @@ namespace MultiplayerServer.Net
 
         private readonly TcpClient _client;
         private readonly NetworkStream _stream;
+        private readonly CancellationTokenSource _cts = new();
 
+        public event Func<ClientConnection, string, Task>? MessageReceived;
         public event Action<ClientConnection>? Disconnected;
-        public event Action<ClientConnection, string>? MessageReceived;
 
         public ClientConnection(TcpClient client, int playerId)
         {
             _client = client;
             _stream = _client.GetStream();
-            _stream.ReadTimeout = 5000; // 5 seconds timeout
+            _stream.ReadTimeout = 5000;
 
             PlayerId = playerId;
 
-            _ = ReadPacket();
+            _ = ReadPacket(_cts.Token);
         }
 
-        private async Task ReadPacket()
+        private async Task ReadPacket(CancellationToken cancellationToken)
         {
             try
             {
-                var buffer = new byte[1024];
+                using var reader = new StreamReader(_stream, Encoding.UTF8, leaveOpen: true);
 
-                while (_client.Connected)
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    int bytesRead = await _stream.ReadAsync(buffer);
+                    string? line;
+                    try
+                    {
+                        line = await reader.ReadLineAsync(cancellationToken);
+                    }
+                    // Server disconnected the client
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
 
-                    // Connection is closed.
-                    if (bytesRead == 0) break;
+                    // Client closed
+                    if (line == null) break;
 
-                    var message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Console.WriteLine($"Received from Player {PlayerId}: {message}");
-                    MessageReceived?.Invoke(this, message);
+                    Console.WriteLine($"[ClientConnection::ReadPacket] Received from Player {PlayerId}: {line}");
+
+                    // MessageReceived is OnPlayerInput.
+                    var handler = MessageReceived;
+                    if (handler != null)
+                    {
+                        await handler(this, line);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error reading from Player {PlayerId}: {ex.Message}");
+                Console.WriteLine($"[ClientConnection::ReadPacket] Error reading from Player {PlayerId}: {ex.Message}");
             }
             finally
             {
                 _client.Close();
-
                 Disconnected?.Invoke(this);
             }
         }
@@ -58,9 +74,17 @@ namespace MultiplayerServer.Net
         {
             if (_client.Connected)
             {
-                var data = Encoding.UTF8.GetBytes(message);
+                var data = Encoding.UTF8.GetBytes(message + "\n");
                 await _stream.WriteAsync(data);
             }
+        }
+
+        public void Dispose()
+        {
+            if (!_cts.IsCancellationRequested)
+                _cts.Cancel();
+
+            _client.Dispose();
         }
     }
 }

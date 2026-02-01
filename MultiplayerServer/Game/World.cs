@@ -10,11 +10,7 @@ namespace MultiplayerServer.Game
 
         public Player AddPlayer(int playerId)
         {
-            var player = new Player(playerId)
-            {
-                X = 0,
-                Y = 0
-            };
+            var player = new Player(playerId);
             _players[playerId] = player;
 
             return player;

@@ -2,6 +2,9 @@
 using MultiplayerServer.Game;
 using MultiplayerServer.Net;
 using MultiplayerServer.Net.Messages;
+using MultiplayerServer.Data.Repositories;
+using MultiplayerServer.Data.Services;
+using System.Text.Json;
 
 namespace MultiplayerServer
 {
@@ -17,13 +20,15 @@ namespace MultiplayerServer
         private readonly World _world;
         private readonly Loop _gameLoop;
         private readonly Dictionary<int, ClientConnection> _connections = [];
+        private readonly PlayerAuthService _authService;
 
         /// <summary>
         /// Initializes a new instance of the Server class and prepares it to accept client connections.
         /// </summary>
         /// <remarks>Sets up the World and TCP instances, and registers the client connect/disconnect events.</remarks>
-        public Server()
+        public Server(PlayerAuthService authService)
         {
+            _authService = authService;
             _world = new World();
             _gameLoop = new Loop(_world);
             _gameLoop.OnTick += BroadcastWorldState;
@@ -49,37 +54,122 @@ namespace MultiplayerServer
 
         private void OnClientConnected(ClientConnection connection)
         {
-            var player = _world.AddPlayer(connection.PlayerId);
-            _connections[connection.PlayerId] = connection;
-            
-            connection.MessageReceived += (conn, msg) => OnPlayerInput(player.Id, msg);
-
-            Console.WriteLine($"Player {connection.PlayerId} connected [spawn: X {player.X} Y {player.Y} Z {player.Z}]");
+            Console.WriteLine($"[Server::OnClientConnected] Client connected, awaiting authentication. PlayerId: {connection.PlayerId}");
+            connection.MessageReceived += OnPlayerInput;
         }
 
         private void OnClientDisconnected(ClientConnection connection)
         {
             _world.RemovePlayer(connection.PlayerId);
             _connections.Remove(connection.PlayerId);
-
-            Console.WriteLine($"Player {connection.PlayerId} disconnected.");
+            Console.WriteLine($"[Server::OnClientDisconnected] Player {connection.PlayerId} disconnected.");
         }
 
-        private void OnPlayerInput(int playerId, string json)
+        private async Task OnPlayerInput(ClientConnection connection, string json)
         {
-            var message = MessageParser.Parse(json);
-            if (message == null) return;
-
-            if (_world.Players.TryGetValue(playerId, out var player))
+            try
             {
-                player.MoveX = message.MoveX;
-                player.MoveZ = message.MoveZ;
-                player.RotateY = message.RotateY;
+                var message = MessageParser.Parse(json);
+                if (message == null) return;
+
+                // AUTHENTICATION:
+                // Register or Login.
+                if (message.Type == "login" || message.Type == "register")
+                {
+                    Console.WriteLine($"[Server::OnPlayerInput] Player {connection.PlayerId} sent {message.Type}");
+                    await HandleAuthMessage(connection, json);
+                    return;
+                }
+
+                // Any other message will be invalid without a login authentication (and thus a reference in _connections).
+                if (!_connections.ContainsKey(connection.PlayerId))
+                {
+                    Console.WriteLine($"[Server::OnPlayerInput] Player {connection.PlayerId} sent message without authentication");
+                    return;
+                }
+
+                // Our only other client message is "move". That is why we don't check against Type.
+                // With future expansions, a switch would become a more structured / clean approach.
+                if (_world.Players.TryGetValue(connection.PlayerId, out var player))
+                {
+                    Console.WriteLine($"[Server::OnPlayerInput] Movement: X {message.MoveX} - Z {message.MoveZ} - RotY{message.RotateY}");
+                    player.MoveX = message.MoveX;
+                    player.MoveZ = message.MoveZ;
+                    player.RotateY = message.RotateY;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server::OnPlayerInput] Error processing input: {ex.Message}");
+            }
+        }
+
+        private async Task HandleAuthMessage(ClientConnection connection, string json)
+        {
+            try
+            {
+                // We have received an auth request from the client (ie register/login).
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                var username = root.GetProperty("username").GetString() ?? string.Empty;
+                var password = root.GetProperty("password").GetString() ?? string.Empty;
+                var action = root.GetProperty("type").GetString() ?? "login";
+
+                var (success, player, message) = action == "register" 
+                    ? await _authService.RegisterPlayerAsync(username, root.GetProperty("email").GetString() ?? string.Empty, password)
+                    : await _authService.LoginPlayerAsync(username, password);
+
+                if (success && player != null)
+                {
+                    var gamePlayer = _world.AddPlayer(connection.PlayerId);
+                    _connections[connection.PlayerId] = connection;
+
+                    var response = new AuthResponseMessage
+                    {
+                        Type = "authResponse",
+                        Success = true,
+                        Message = message,  // "Login/registration successful"
+                        PlayerId = player.Id,
+                        Username = player.Username
+                    };
+
+                    var responseJson = MessageParser.Serialize(response);
+                    // json display example
+                    // Console.WriteLine($"[Server::HandleAuthMessage] Packet sent for auth: {responseJson}");
+                    await connection.SendPacket(responseJson);
+
+                    Console.WriteLine($"[Server::HandleAuthMessage] Player {player.Username} ({connection.PlayerId}) authenticated successfully");
+                }
+                else
+                {
+                    var response = new AuthResponseMessage
+                    {
+                        Type = "authResponse",
+                        Success = false,
+                        Message = message,
+                        PlayerId = -1
+                    };
+
+                    var responseJson = MessageParser.Serialize(response);
+                    await connection.SendPacket(responseJson);
+
+                    Console.WriteLine($"[Server::HandleAuthMessage] Authentication failed: {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Server::HandleAuthMessage] Error handling auth: {ex.Message}");
             }
         }
 
         private void BroadcastWorldState()
         {
+            // Update the players with the current world state. Currently only sends the player positions.
+            // Runs on server update tick.
+
+            //Console.WriteLine($"[DEBUG] BroadcastWorldState called. Connected players: {_connections.Count}");
+
             var worldState = new WorldStateMessage
             {
                 Type = "worldState",

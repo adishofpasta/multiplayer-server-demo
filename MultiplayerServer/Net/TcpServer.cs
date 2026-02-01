@@ -14,6 +14,9 @@ namespace MultiplayerServer.Net
         public event Action<ClientConnection>? ClientConnected;
         public event Action<ClientConnection>? ClientDisconnected;
 
+        // We keep a list of connected clients to manage their packet reading requirements.
+        private readonly List<ClientConnection> _clients = [];
+
         public void Start(int port)
         {
             _listener = new TcpListener(System.Net.IPAddress.Any, port);
@@ -33,6 +36,14 @@ namespace MultiplayerServer.Net
             _cts?.Cancel();
             _acceptTask?.Wait(TimeSpan.FromSeconds(2));
 
+            // Gracefully disconnect all clients.
+            // Important due to CancellationToken being checked against, on ClientConnection::ReadPacket
+            foreach (var client in _clients.ToArray())
+            {
+                client.Dispose();
+            }
+            _clients.Clear();
+
             _listener?.Stop();
 
             Console.WriteLine("TCP Server stopped.");
@@ -45,27 +56,29 @@ namespace MultiplayerServer.Net
                 while (_running && !cancellationToken.IsCancellationRequested)
                 {
                     if (_listener == null)
-                        throw new InvalidOperationException("Server running on unitialized listener.");
+                        throw new InvalidOperationException("[TcpServer::AcceptClientAsync] Server running on unitialized listener.");
 
                     var tcpClient = await _listener.AcceptTcpClientAsync(cancellationToken);
                     var clientConnection = new ClientConnection(tcpClient, _nextPlayerId++);
+                    _clients.Add(clientConnection);
 
                     ClientConnected?.Invoke(clientConnection);
                     clientConnection.Disconnected += c =>
                     {
+                        _clients.Remove(c);
                         ClientDisconnected?.Invoke(c);
                     };
 
-                    Console.WriteLine($"Client connected with PlayerId: {clientConnection.PlayerId}");
+                    Console.WriteLine($"[TcpServer::AcceptClientAsync] Client connected with PlayerId: {clientConnection.PlayerId}");
                 }
             }
-            // Ignore exception caused by stopping the listener
+            // Ignore exceptions caused by stopping the listener.
             catch (ObjectDisposedException) { }
             catch (OperationCanceledException) { }
 
             catch (Exception ex)
             {
-                Console.WriteLine($"Error accepting client: {ex.Message}");
+                Console.WriteLine($"[TcpServer::AcceptClientAsync] Error accepting client: {ex.Message}");
             }
         }
     }

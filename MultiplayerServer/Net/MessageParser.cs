@@ -31,7 +31,7 @@ namespace MultiplayerServer.Net
 
         public static string Serialize(ServerMessage message)
         {
-            return JsonSerializer.Serialize(message, ServerOptions);
+            return JsonSerializer.Serialize(message, message.GetType(), ServerOptions);
         }
     }
 }

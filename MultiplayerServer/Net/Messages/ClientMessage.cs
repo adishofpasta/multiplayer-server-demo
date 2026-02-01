@@ -5,7 +5,7 @@ namespace MultiplayerServer.Net.Messages
     public class ClientMessage
     {
         [JsonPropertyName("type")]
-        public string Type { get; set; }
+        public string Type { get; set; } // Only movement for now.
 
         [JsonPropertyName("moveX")]
         public float MoveX { get; set; }
